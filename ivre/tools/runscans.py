@@ -19,13 +19,12 @@
 
 """
 This program runs scans and produces output files importable with
-nmap2db.
+ivre scan2db.
 """
 
 import subprocess
 import resource
 import multiprocessing
-import shlex
 import pipes
 import shutil
 import select
@@ -64,10 +63,10 @@ def setnmaplimits():
         resource.setrlimit(limit, value)
 
 
-class XmlProcess:
+class XmlProcess(object):
     addrrec = re.compile('<address\\s+addr="([0-9\\.]+)" addrtype="ipv4"/>')
 
-    def target_status(self, target):
+    def target_status(self, _):
         return STATUS_NEW
 
 
@@ -264,7 +263,7 @@ def _call_nmap_single(maincategory, options,
     ivre.utils.makedirs(os.path.dirname(outfile % outdir))
     shutil.move(outfile % 'current', outfile % outdir)
 
-if __name__ == '__main__':
+def main():
     accept_target_status = set([STATUS_NEW])
     try:
         import argparse
@@ -295,13 +294,13 @@ if __name__ == '__main__':
                         help='run COUNT nmap processes in parallel '
                         '(when --output=XMLFork)')
     parser.add_argument('--nmap-max-cpu', metavar='TIME', type=int,
-                        help='maximumt amount of CPU time (in seconds) '
+                        help='maximum amount of CPU time (in seconds) '
                         'per nmap process')
-    parser.add_argument('--nmap-max-heap-size', metavar='TIME', type=int,
-                        help="maximumt size (in bytes) of each nmap "
+    parser.add_argument('--nmap-max-heap-size', metavar='SIZE', type=int,
+                        help="maximum size (in bytes) of each nmap "
                         "process's heap")
-    parser.add_argument('--nmap-max-stack-size', metavar='TIME', type=int,
-                        help="maximumt size (in bytes) of each nmap "
+    parser.add_argument('--nmap-max-stack-size', metavar='SIZE', type=int,
+                        help="maximum size (in bytes) of each nmap "
                         "process's stack")
     if USING_ARGPARSE:
         parser.add_argument('--again', nargs='+',
@@ -325,6 +324,12 @@ if __name__ == '__main__':
                 ivre.geoiputils.count_ips_by_country(args.country)
             )
             exit(0)
+        if args.region is not None:
+            print '%s / %s has %d IPs.' % (
+                args.region[0], args.region[1],
+                ivre.geoiputils.count_ips_by_region(*args.region),
+            )
+            exit(0)
         if args.asnum is not None:
             print 'AS%d has %d IPs.' % (
                 args.asnum,
@@ -337,8 +342,8 @@ if __name__ == '__main__':
             )
             exit(0)
         parser.error("argument --output: invalid choice: '%s' "
-                     "(only available with --country, --asnum or "
-                     "--routable)" % args.output)
+                     "(only available with --country, --asnum, --region "
+                     "or --routable)" % args.output)
     if args.output in ['List', 'ListAll', 'ListCIDRs']:
         if args.output == 'List':
             listall = False
@@ -354,6 +359,11 @@ if __name__ == '__main__':
                                                 listall=listall,
                                                 listcidrs=listcidrs)
             exit(0)
+        if args.region is not None:
+            ivre.geoiputils.list_ips_by_region(*args.region,
+                                               listall=listall,
+                                               listcidrs=listcidrs)
+            exit(0)
         if args.asnum is not None:
             ivre.geoiputils.list_ips_by_asnum(args.asnum,
                                               listall=listall,
@@ -364,20 +374,21 @@ if __name__ == '__main__':
                                               listcidrs=listcidrs)
             exit(0)
         parser.error("argument --output: invalid choice: '%s' "
-                     "(only available with --country, --asnum or "
-                     "--routable)" % args.output)
+                     "(only available with --country, --region, --asnum "
+                     "or --routable)" % args.output)
     targets = ivre.target.target_from_args(args)
     if targets is None:
         parser.error('one argument of --country/--asnum/--range/--network/'
                      '--routable/--file/--test is required')
     if args.again is not None:
-        accept_target_status = set(reduce(lambda x, y: x + y, [{
-            'up': [STATUS_DONE_UP],
-            'down': [STATUS_DONE_DOWN],
-            'unknown': [STATUS_DONE_UNKNOWN],
-            'all': [STATUS_DONE_UP, STATUS_DONE_DOWN,
-                    STATUS_DONE_UNKNOWN]
-        }[x] for x in args.again],
+        accept_target_status = set(reduce(
+            lambda x, y: x + y, [{
+                'up': [STATUS_DONE_UP],
+                'down': [STATUS_DONE_DOWN],
+                'unknown': [STATUS_DONE_UNKNOWN],
+                'all': [STATUS_DONE_UP, STATUS_DONE_DOWN,
+                        STATUS_DONE_UNKNOWN]
+            }[x] for x in args.again],
             [STATUS_NEW]))
     if args.zmap_prescan_port is not None:
         args.nmap_ping_types = ["PS%d" % args.zmap_prescan_port]
@@ -409,7 +420,7 @@ if __name__ == '__main__':
                                          accept_target_status,
                                          target)
         pool = multiprocessing.Pool(processes=args.processes)
-        for i in pool.imap(call_nmap_single, targets, chunksize=1):
+        for _ in pool.imap(call_nmap_single, targets, chunksize=1):
             pass
         restore_echo()
         exit(0)

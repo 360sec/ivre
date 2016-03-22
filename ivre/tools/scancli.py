@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
-from ivre import utils, db, graphroute, config
+from ivre import utils, db, graphroute, config, xmlnmap, nmapout
 
 import sys
 reload(sys)
@@ -28,130 +28,7 @@ try:
 except ImportError:
     USING_ORDEREDDICT = False
 from datetime import datetime
-
-
-def displayhost(dic, showscripts=True, showtraceroute=True, showos=True,
-                out=sys.stdout):
-    try:
-        h = "Host %s" % utils.int2ip(dic['addr'])
-    except:
-        h = "Host %s" % dic['addr']
-    if 'hostnames' in dic and dic['hostnames']:
-        h += " (%s)" % '/'.join(x['name'] for x in dic['hostnames'])
-    if 'source' in dic:
-        h += ' from %s' % dic['source']
-    if 'categories' in dic and dic['categories']:
-        h += ' (%s)' % ', '.join(dic['categories'])
-    if 'state' in dic:
-        h += ' (%s' % dic['state']
-        if 'state_reason' in dic:
-            h += ': %s' % dic['state_reason']
-        h += ')\n'
-    out.write(h)
-    if 'infos' in dic:
-        infos = dic['infos']
-        if 'country_code' in infos or 'country_name' in infos:
-            out.write("\t%s - %s" % (infos.get('country_code', '?'),
-                                     infos.get('country_name', '?')))
-            if 'city' in infos:
-                out.write(' - %s' % infos['city'])
-            out.write('\n')
-        if 'as_num' in infos or 'as_name' in infos:
-            out.write("\tAS%s - %s\n" % (infos.get('as_num', '?'),
-                                         infos.get('as_name', '?')))
-    if 'starttime' in dic and 'endtime' in dic:
-        out.write("\tscan %s - %s\n" %
-                 (dic['starttime'], dic['endtime']))
-    if 'extraports' in dic:
-        d = dic['extraports']
-        for k in d:
-            out.write("\t%d ports %s (%s)\n" %
-                      (d[k][0], k, ', '.join(['%d %s' % (d[k][1][kk], kk)
-                                              for kk in d[k][1].keys()])))
-    if 'ports' in dic:
-        d = dic['ports']
-        d.sort(key=lambda x: (x.get('protocol'), x['port']))
-        for k in d:
-            if k.get('port') == 'host':
-                dic['scripts'] = k['scripts']
-                continue
-            reason = ""
-            if 'state_reason' in k:
-                reason = " (%s" % k['state_reason']
-                for kk in filter(lambda x: x.startswith('state_reason_'),
-                                 k.keys()):
-                    reason += ", %s=%s" % (kk[13:], k[kk])
-                reason += ')'
-            srv = ""
-            if 'service_name' in k:
-                srv = "" + k['service_name']
-                if 'service_method' in k:
-                    srv += ' (%s)' % k['service_method']
-                for kk in ['service_product', 'service_version',
-                           'service_extrainfo', 'service_ostype',
-                           'service_hostname']:
-                    if kk in k:
-                        srv += ' %s' % k[kk]
-            out.write("\t%-10s%-8s%-22s%s\n" %
-                      ('%s/%d' % (k.get('protocol'), k['port']),
-                       k['state_state'], reason, srv))
-            if showscripts and 'scripts' in k:
-                for s in k['scripts']:
-                    if 'output' not in s:
-                        out.write('\t\t' + s['id'] + ':\n')
-                    else:
-                        o = filter(
-                            lambda x: x, map(lambda x: x.strip(),
-                                             s['output'].split('\n')))
-                        if len(o) == 0:
-                            out.write('\t\t' + s['id'] + ':\n')
-                        elif len(o) == 1:
-                            out.write('\t\t' + s['id'] + ': ' + o[0] + '\n')
-                        elif len(o) > 1:
-                            out.write('\t\t' + s['id'] + ': \n')
-                            for oo in o:
-                                out.write('\t\t\t' + oo + '\n')
-    if showscripts and 'scripts' in dic:
-        out.write('\tHost scripts:\n')
-        for s in dic['scripts']:
-            if 'output' not in s:
-                out.write('\t\t' + s['id'] + ':\n')
-            else:
-                o = [x.strip() for x in s['output'].split('\n') if x]
-                if len(o) == 0:
-                    out.write('\t\t' + s['id'] + ':\n')
-                elif len(o) == 1:
-                    out.write('\t\t' + s['id'] + ': ' + o[0] + '\n')
-                elif len(o) > 1:
-                    out.write('\t\t' + s['id'] + ': \n')
-                    for oo in o:
-                        out.write('\t\t\t' + oo + '\n')
-    if showtraceroute and 'traces' in dic and dic['traces']:
-        for k in dic['traces']:
-            proto = k['protocol']
-            if proto in ['tcp', 'udp']:
-                proto += '/%d' % k['port']
-            out.write('\tTraceroute (using %s)\n' % proto)
-            hops = k['hops']
-            hops.sort(key=lambda x: x['ttl'])
-            for i in hops:
-                try:
-                    out.write('\t\t%3s %15s %7s\n' %
-                              (i['ttl'], utils.int2ip(i['ipaddr']),
-                               i['rtt']))
-                except:
-                    out.write('\t\t%3s %15s %7s\n' %
-                              (i['ttl'], i['ipaddr'], i['rtt']))
-    if showos and 'os' in dic and 'osclass' in dic['os'] and \
-       dic['os']['osclass']:
-        o = dic['os']['osclass']
-        maxacc = str(max([int(x['accuracy']) for x in o]))
-        o = filter(lambda x: x['accuracy'] == maxacc, o)
-        out.write('\tOS fingerprint\n')
-        for oo in o:
-            out.write(
-                '\t\t%(osfamily)s / %(type)s / %(vendor)s / '
-                'accuracy = %(accuracy)s\n' % oo)
+from xml.sax import saxutils
 
 
 HONEYD_ACTION_FROM_NMAP_STATE = {
@@ -216,17 +93,23 @@ def display_honeyd_conf(host, honeyd_routes, honeyd_entries, out=sys.stdout):
     defaction = HONEYD_DEFAULT_ACTION
     if 'extraports' in host:
         extra = host['extraports']
-        defstate = extra[max(extra, key=lambda x: extra[x][0])][1]
-        defaction = HONEYD_ACTION_FROM_NMAP_STATE.get(
-            max(defstate, key=lambda x: defstate[x]),
-            HONEYD_DEFAULT_ACTION
-        )
+        defaction = max(
+            max(extra.itervalues(),
+                key=lambda state: state['total'])['reasons'].iteritems(),
+            key=lambda reason: reason[1],
+        )[0]
+        defaction = HONEYD_ACTION_FROM_NMAP_STATE.get(defaction)
     out.write('set %s default tcp action %s\n' % (hname, defaction))
     for p in host.get('ports', []):
-        out.write('add %s %s port %d %s\n' % (
-            hname, p['protocol'], p['port'],
-            nmap_port2honeyd_action(p))
-        )
+        try:
+            out.write('add %s %s port %d %s\n' % (
+                hname, p['protocol'], p['port'],
+                nmap_port2honeyd_action(p),
+            ))
+        except KeyError:
+            # let's skip pseudo-port records that are only containers for host
+            # scripts.
+            pass
     if 'traces' in host and len(host['traces']) > 0:
         trace = max(host['traces'], key=lambda x: len(x['hops']))['hops']
         if trace:
@@ -284,21 +167,18 @@ def display_xml_preamble(out=sys.stdout):
               'type="text/xsl"?>\n')
 
 
-def display_xml_host(h, out=sys.stdout, archive=False):
-    if isinstance(h['scanid'], list):
-        # meaningless when multiple scans have been merged
-        scan = {}
-    else:
-        scan = db.db.nmap.getscan(h['scanid'], archive=archive)
-        if 'scaninfos' in scan and scan['scaninfos']:
-            for k in scan['scaninfos'][0]:
-                scan['scaninfo.%s' % k] = scan['scaninfos'][0][k]
-                del scan['scaninfos']
+def display_xml_scan(scan, out=sys.stdout):
+    if 'scaninfos' in scan and scan['scaninfos']:
+        for k in scan['scaninfos'][0]:
+            scan['scaninfo.%s' % k] = scan['scaninfos'][0][k]
+        del scan['scaninfos']
     for k in ['version', 'start', 'startstr', 'args', 'scanner',
               'xmloutputversion', 'scaninfo.type', 'scaninfo.protocol',
               'scaninfo.numservices', 'scaninfo.services']:
         if k not in scan:
             scan[k] = ''
+        elif isinstance(scan[k], (str, unicode)):
+            scan[k] = scan[k].replace('"', '&quot;').replace('--', '-&#45;')
     out.write('<!DOCTYPE nmaprun PUBLIC '
               '"-//IDN nmap.org//DTD Nmap XML 1.04//EN" '
               '"https://svn.nmap.org/nmap/docs/nmap.dtd">\n'
@@ -315,10 +195,55 @@ def display_xml_host(h, out=sys.stdout, archive=False):
               'protocol="%(scaninfo.protocol)s" '
               'numservices="%(scaninfo.numservices)s" '
               'services="%(scaninfo.services)s"/>\n' % scan)
+
+
+def display_xml_table_elem(doc, first=False, name=None, out=sys.stdout):
+    if first:
+        assert name is None
+    name = '' if name is None else ' key=%s' % saxutils.quoteattr(name)
+    if isinstance(doc, list):
+        if not first:
+            out.write('<table%s>\n' % name)
+        for subdoc in doc:
+            display_xml_table_elem(subdoc, out=out)
+        if not first:
+            out.write('</table>\n')
+    elif isinstance(doc, dict):
+        if not first:
+            out.write('<table%s>\n' % name)
+        for key, subdoc in doc.iteritems():
+            display_xml_table_elem(subdoc, name=key, out=out)
+        if not first:
+            out.write('</table>\n')
+    else:
+        out.write('<elem%s>%s</elem>\n' % (name,
+                                           saxutils.escape(
+                                               str(doc),
+                                               entities={'\n': '&#10;'},
+                                           )))
+
+
+def display_xml_script(s, out=sys.stdout):
+    out.write('<script id=%s' % saxutils.quoteattr(s['id']))
+    if 'output' in s:
+        out.write(' output=%s' % saxutils.quoteattr(s['output']))
+    key = xmlnmap.ALIASES_TABLE_ELEMS.get(s['id'], s['id'])
+    if key in s:
+        out.write('>')
+        display_xml_table_elem(s[key], first=True, out=out)
+        out.write('</script>')
+    else:
+        out.write('/>')
+
+
+def display_xml_host(h, out=sys.stdout):
     out.write('<host')
-    for k in ["timedout", "timeoutcounter", "starttime", "endtime"]:
+    for k in ["timedout", "timeoutcounter"]:
         if k in h:
-            out.write(' %s="%s"' % (k, h[k]))
+            out.write(' %s=%s' % (k, saxutils.quoteattr(h[k])))
+    for k in ["starttime", "endtime"]:
+        if k in h:
+            out.write(' %s=%s' % (k, saxutils.quoteattr(h[k].strftime('%s'))))
     out.write('>')
     if 'state' in h:
         out.write('<status state="%s"' % h['state'])
@@ -326,7 +251,7 @@ def display_xml_host(h, out=sys.stdout, archive=False):
             kk = "state_%s" % k
             if kk in h:
                 out.write(' %s="%s"' % (k, h[kk]))
-        out.write('>')
+        out.write('/>')
     out.write('\n')
     if 'addr' in h:
         try:
@@ -344,50 +269,92 @@ def display_xml_host(h, out=sys.stdout, archive=False):
             for k in ['name', 'type']:
                 if k in hostname:
                     out.write(' %s="%s"' % (k, hostname[k]))
-            out.write('>\n')
+            out.write('/>\n')
         out.write('</hostnames>\n')
     out.write('<ports>')
-    for k in h.get('extraports', []):
+    for state, counts in h.get('extraports', {}).iteritems():
         out.write('<extraports state="%s" count="%d">\n' % (
-            k, h['extraports'][k][0]))
-        for kk in h['extraports'][k][1]:
+            state, counts['total']
+        ))
+        for reason, count in counts['reasons'].iteritems():
             out.write('<extrareasons reason="%s" count="%d"/>\n' % (
-                kk, h['extraports'][k][1][kk]))
+                reason, count
+            ))
         out.write('</extraports>\n')
     for p in h.get('ports', []):
+        if p.get('port') == -1:
+            h['scripts'] = p['scripts']
+            continue
         out.write('<port')
         if 'protocol' in p:
             out.write(' protocol="%s"' % p['protocol'])
         if 'port' in p:
             out.write(' portid="%s"' % p['port'])
-        out.write('><status')
+        out.write('><state')
         for k in ['state', 'reason', 'reason_ttl']:
             kk = 'state_%s' % k
             if kk in p:
-                out.write(' %s="%s"' % (k, p[kk]))
+                out.write(' %s=%s' % (k, saxutils.quoteattr(str(p[kk]))))
         out.write('/>')
         if 'service_name' in p:
             out.write('<service name="%s"' % p['service_name'])
-            for k in ['extrainfo', 'servicefp', 'method', 'conf']:
+            for k in ['servicefp', 'product', 'version', 'extrainfo',
+                      'ostype', 'method', 'conf']:
                 kk = "service_%s" % k
                 if kk in p:
                     if type(p[kk]) in [str, unicode]:
-                        out.write(' %s="%s"' % (
-                            k, p[kk].replace('"', '&quot;'))
-                        )
+                        out.write(' %s=%s' % (
+                            k, saxutils.quoteattr(p[kk])
+                        ))
                     else:
                         out.write(' %s="%s"' % (k, p[kk]))
+            # TODO: CPE
+            out.write('></service>')
         for s in p.get('scripts', []):
-            out.write('<script id="%s" output="%s"' % (
-                s['id'], s['output'].replace('"', '&quot;')))
-            if s['id'] in s:
-                out.write('>')
-                # XXX TODO table/elem
-                out.write('</script>')
-            else:
-                out.write('/>')
+            display_xml_script(s, out=out)
         out.write('</port>\n')
     out.write('</ports>\n')
+    if 'scripts' in h:
+        out.write('<hostscript>')
+        for s in h['scripts']:
+            display_xml_script(s, out=out)
+        out.write('</hostscript>')
+    for trace in h.get('traces', []):
+        out.write('<trace')
+        if 'port' in trace:
+            out.write(' port=%s' % (saxutils.quoteattr(str(trace['port']))))
+        if 'protocol' in trace:
+            out.write(' proto=%s' % (saxutils.quoteattr(trace['protocol'])))
+        out.write('>\n')
+        for hop in sorted(trace.get('hops', []),
+                          key=lambda hop: hop['ttl']):
+            out.write('<hop')
+            if 'ttl' in hop:
+                out.write(' ttl=%s' % (
+                    saxutils.quoteattr(str(hop['ttl']))
+                ))
+            if 'ipaddr' in hop:
+                out.write(' ipaddr=%s' % (
+                    saxutils.quoteattr(utils.int2ip(hop['ipaddr']))
+                ))
+            if 'rtt' in hop:
+                out.write(' rtt=%s' % (
+                    saxutils.quoteattr('%.2f' % hop['rtt']
+                                       if type(hop['rtt']) is float else
+                                       hop['rtt'])
+                ))
+            if 'host' in hop:
+                out.write(' host=%s' % (
+                    saxutils.quoteattr(hop['host'])
+                ))
+            out.write('/>\n')
+        out.write('</trace>\n')
+    out.write('</host>\n')
+
+
+def display_xml_epilogue(out=sys.stdout):
+    out.write('</nmaprun>\n')
+
 
 def displayhost_csv(fields, separator, nastr, dic, out=sys.stdout):
     out.write('\n'.join(separator.join(elt for elt in line)
@@ -440,7 +407,7 @@ def main():
     if graphroute.HAVE_DBUS:
         parser.add_argument('--graphroute-dont-reset', action='store_true',
                             help='Do NOT reset graph (only for '
-                                 '--graphroute rtgraph3d)')
+                            '--graphroute rtgraph3d)')
     parser.add_argument('--graphroute-include', choices=['last-hop', 'target'],
                         help='How far should graphroute go? Default if to '
                         'exclude the last hop and the target for each result.')
@@ -462,6 +429,11 @@ def main():
                         help='ARCHIVE the matched results instead of '
                         'displaying them (i.e., move the results to '
                         'the archive collections).')
+    parser.add_argument('--move-from-archives', action='store_true',
+                        help='UNARCHIVE the matched results instead of '
+                        'displaying them (i.e., move the results from '
+                        'the archive collections to the "fresh" results '
+                        'collections).')
     parser.add_argument('--update-schema', action='store_true',
                         help='update (host) schema. Use with --version to '
                         'specify your current version and run twice, once '
@@ -495,14 +467,6 @@ def main():
     args = parser.parse_args()
 
     out = sys.stdout
-
-    def displayfunction(x):
-        for h in x:
-            displayhost(h, out=out)
-            if os.isatty(out.fileno()):
-                raw_input()
-            else:
-                out.write('\n')
 
     hostfilter = db.db.nmap.parse_args(args)
     sortkeys = []
@@ -550,7 +514,11 @@ def main():
             else:
                 indent = None
             for h in x:
-                del(h['scanid'])
+                for fld in ['_id', 'scanid']:
+                    try:
+                        del h[fld]
+                    except KeyError:
+                        pass
                 for port in h.get('ports', []):
                     if args.no_screenshots:
                         for fname in ['screenshot', 'screendata']:
@@ -583,9 +551,19 @@ def main():
             display_honeyd_epilogue(honeyd_routes, honeyd_entries, out)
     elif args.nmap_xml:
         def displayfunction(x):
-            display_xml_preamble(out)
+            display_xml_preamble(out=out)
+            if x.count() == 1 and not isinstance(x[0]['scanid'], list):
+                scan = db.db.nmap.getscan(x[0]['scanid'], archive=args.archives)
+                if 'scaninfos' in scan and scan['scaninfos']:
+                    for k in scan['scaninfos'][0]:
+                        scan['scaninfo.%s' % k] = scan['scaninfos'][0][k]
+                    del scan['scaninfos']
+            else:
+                scan = {}
+            display_xml_scan(scan, out=out)
             for h in x:
-                display_xml_host(h, out=out, archive=args.archives)
+                display_xml_host(h, out=out)
+            display_xml_epilogue(out=out)
     elif args.graphroute is not None:
         def displayfunction(cursor):
             graph, entry_nodes = graphroute.buildgraph(
@@ -594,7 +572,6 @@ def main():
                 include_target=args.graphroute_include == "target",
             )
             if args.graphroute == "dot":
-                cluster = None
                 if args.graphroute_cluster == "AS":
                     def cluster(ipaddr):
                         res = db.db.data.as_byip(ipaddr)
@@ -609,6 +586,8 @@ def main():
                             return
                         return (res['country_code'],
                                 "%(country_code)s - %(country_name)s" % res)
+                else:
+                    cluster = None
                 graphroute.writedotgraph(graph, sys.stdout,
                                          cluster=cluster)
             elif args.graphroute == "rtgraph3d":
@@ -632,9 +611,15 @@ def main():
             for h in x:
                 db.db.nmap.remove(h, archive=args.archives)
     elif args.move_to_archives:
+        args.archives = False
         def displayfunction(x):
             for h in x:
                 db.db.nmap.archive(h)
+    elif args.move_from_archives:
+        args.archives = True
+        def displayfunction(x):
+            for h in x:
+                db.db.nmap.archive(h, unarchive=True)
     elif USING_ORDEREDDICT and args.csv is not None:
         fields = {
             "ports": OrderedDict([
@@ -645,23 +630,21 @@ def main():
             "hops": OrderedDict([
                 ["addr", utils.int2ip],
                 ["traces", OrderedDict([
-                     ["hops", OrderedDict([
-                         ["ipaddr", utils.int2ip],
-                         ["ttl", str],
-                         ["rtt", lambda x: (args.csv_na_str if x == '--'
-                                            else str(x))],
-                     ])
-                  ]
+                    ["hops", OrderedDict([
+                        ["ipaddr", utils.int2ip],
+                        ["ttl", str],
+                        ["rtt", lambda x: (args.csv_na_str if x == '--'
+                                           else str(x))],
+                    ])]
                 ])]
             ]),
             "rtt": OrderedDict([
                 ["addr", utils.int2ip],
                 ["traces", OrderedDict([
-                     ["hops", OrderedDict([
-                         ["rtt", lambda x: (args.csv_na_str if x == '--'
-                                            else str(x))],
-                     ])
-                  ]
+                    ["hops", OrderedDict([
+                        ["rtt", lambda x: (args.csv_na_str if x == '--'
+                                           else str(x))],
+                    ])]
                 ])]
             ]),
         }.get(args.csv)
@@ -679,6 +662,9 @@ def main():
             for h in x:
                 displayhost_csv(fields, args.csv_separator, args.csv_na_str,
                                 h, out=out)
+    else:
+        def displayfunction(cursor):
+            nmapout.displayhosts(cursor, out=out)
     if args.sort is not None:
         sortkeys = [(field.startswith('~') and field[1:] or field,
                      field.startswith('~') and -1 or 1)
@@ -699,8 +685,3 @@ def main():
             cursor = cursor.skip(args.skip)
         displayfunction(cursor)
         sys.exit(0)
-
-if __name__ == '__main__':
-    reload(sys)
-    sys.setdefaultencoding('utf-8')
-    main()

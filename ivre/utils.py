@@ -27,12 +27,22 @@ import socket
 import datetime
 import re
 import os
+import sys
 import shutil
 import errno
 import hashlib
 import gzip
 import bz2
 import subprocess
+import traceback
+from cStringIO import StringIO
+try:
+    import PIL.Image
+    import PIL.ImageChops
+    USE_PIL = True
+except ImportError:
+    USE_PIL = False
+
 
 from ivre import config
 
@@ -259,8 +269,8 @@ def diff(doc1, doc2):
     between two scans.
 
     """
-    keys1 = set(doc1.keys())
-    keys2 = set(doc2.keys())
+    keys1 = set(doc1)
+    keys2 = set(doc2)
     res = {}
     for key in keys1.symmetric_difference(keys2):
         res[key] = True
@@ -277,15 +287,11 @@ def diff(doc1, doc2):
             if not res[key]:
                 del res[key]
             continue
-        if key in ['extraports']:
+        if key == 'extraports':
             res[key] = {}
-            kkeys1 = set(doc1[key].keys())
-            kkeys2 = set(doc2[key].keys())
-            for kkey in kkeys1.symmetric_difference(kkeys2):
-                res[key][kkey] = True
-            for kkey in kkeys1.intersection(kkeys2):
-                if doc1[key][kkey] != doc2[key][kkey]:
-                    res[key][kkey] = True
+            for state in set(doc1[key]).union(doc2[key]):
+                if doc1[key].get(state) != doc2[key].get(state):
+                    res[key][state] = True
             if not res[key]:
                 del res[key]
             continue
@@ -371,7 +377,7 @@ def open_file(fname):
     return {
         "bz2": bz2.BZ2File,
         "gz": gzip.open,
-    }.get(os.path.basename(fname).split('.')[-1], open)(fname)
+    }.get(os.path.basename(fname).rsplit('.', 1)[-1], open)(fname)
 
 def hash_file(fname, hashtype="sha1"):
     """Compute a hash of data from a given file"""
@@ -394,6 +400,23 @@ def serialize(obj):
     raise TypeError("Don't know what to do with %r (%r)" % (
         obj, type(obj)))
 
+
+def warn_exception(exc, **kargs):
+    """This function returns a WARNING line based on the exception
+    `exc` and the optional extra information.
+
+    If config.DEBUG is True, the function will append to the result
+    the full stacktrace.
+
+    """
+    return "WARNING: %s [%r]%s\n%s" % (
+        exc, exc,
+        " [%s]" % ", ".join("%s=%s" % (key, value)
+                            for key, value in kargs.iteritems())
+        if kargs else "",
+        "\t%s\n" % "\n\t".join(traceback.format_exc().splitlines())
+        if config.DEBUG else "",
+    )
 
 
 class FakeArgparserParent(object):
@@ -473,3 +496,39 @@ def screenwords(imgdata):
                         break
         if result:
             return result
+
+if USE_PIL:
+    def trim_image(imgdata, tolerance=1, minborder=10):
+        """Trims the image, `tolerancean` is an integer from 0 (not
+        tolerant, trims region with the exact same color) to 255
+        (too tolerant, will trim the whole image).
+
+        """
+        img = PIL.Image.open(StringIO(imgdata))
+        bkg = PIL.Image.new(img.mode, img.size, img.getpixel((0, 0)))
+        diffbkg = PIL.ImageChops.difference(img, bkg)
+        if tolerance:
+            diffbkg = PIL.ImageChops.add(diffbkg, diffbkg, 2.0, -tolerance)
+        bbox = diffbkg.getbbox()
+        if bbox:
+            newbbox = (max(bbox[0] - minborder, 0),
+                       max(bbox[1] - minborder, 0),
+                       img.size[0] - max(img.size[0] - bbox[2] - minborder, 0),
+                       img.size[1] - max(img.size[1] - bbox[3] - minborder, 0))
+            if newbbox != (0, 0, img.size[0], img.size[1]):
+                out = StringIO()
+                img.crop(newbbox).save(out, format='jpeg')
+                out.seek(0)
+                return out.read()
+            else:
+                # Image does not need to be modified
+                return True
+        # Image no longer exist after trim
+        return False
+else:
+    def trim_image(imgdata, _tolerance=1, _minborder=10):
+        """Stub function used when PIL cannot be found"""
+        if config.DEBUG:
+            sys.stdout.write('WARNING: Python PIL not found, '
+                             'screenshots will not be trimmed')
+        return imgdata

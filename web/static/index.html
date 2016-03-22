@@ -34,9 +34,10 @@
       config = {};
     </script>
     <script type="text/javascript" src="config.js"></script>
-    <script type="text/javascript" src="help.js"></script>
+    <script type="text/javascript" src="ivre/content.js"></script>
     <script type="text/javascript" src="ivre/utils.js"></script>
     <script type="text/javascript" src="ivre/graph.js"></script>
+    <script type="text/javascript" src="ivre/filters.js"></script>
     <script type="text/javascript" src="ivre/controllers.js"></script>
     <script type="text/javascript" src="ivre/params.js"></script>
     <script type="text/javascript" src="ivre/tooltip.js"></script>
@@ -46,30 +47,9 @@
 
   <body onload="load();" ng-controller="IvreMainCtrl">
 
-    <!-- The top navigation bar -->
-    <div id="navbar" class="navbar navbar-inverse navbar-fixed-top row">
-      <div class="col-lg-2 col-sm-1">
-	<div class="navbar-ivre">
-	  <!-- The logo + app name -->
-	  <a href="#"><img alt="Logo" src="logo.png" class="logo"/></a>
-	  <a href="#" class="navbar-brand visible-lg">
-	    IVRE
-	  </a>
-	</div>
-      </div>
-      <!-- The menu -->
-      <ul class="nav navbar-nav col-lg-9 col-md-10 col-sm-11"
-	  ng-controller="IvreMenuCtrl"
-	  ivre-menu=""></ul>
-      <ul class="nav navbar-nav col-lg-1 col-md-1 visible-lg visible-md">
-	<!-- Droids Corp web site -->
-	<a title="Droids Corporation"
-	   href="http://droids-corp.org/"
-	   target="_blank"
-	   class="navbar-link">
-	  <img alt="Droids Corp" src="droids.png" class="logo"/>
-	</a>
-      </ul>
+    <!-- Menu -->
+    <div ng-controller="IvreMenuCtrl"
+	 ivre-menu="main">
     </div>
 
     <div class="container-fluid">
@@ -83,7 +63,7 @@
 	    <hr />
 	    <ul class="nav"
 		ng-controller="IvreFilterListCtrl">
-	      <ivre-filters></ivre-filters>
+	      <ivre-filters title="Filter"></ivre-filters>
 	      <hr />
 	      <ivre-topvalues></ivre-topvalues>
 	    </ul>
@@ -107,15 +87,15 @@
 		  ng-src="{{notes_page}}";
 		  onload="this.parentNode.style.height=window.innerHeight-50+'px'">
 	  </iframe>
-	  <div id="charts" style="display: none;">
+	  <div id="chart" class="chart" style="display: none;">
 	    <div>
 	      <center>
-		<span id="chartstitle"></span>
+		<span name="charttitle"></span>
 		<i class="icon-remove clickable"
-		   onclick="build_current_graph = undefined; hidecharts();"></i>
+		   onclick="hidecharts();"></i>
 	      </center>
 	    </div>
-	    <div id="chart1"></div>
+	    <div name="chartcontent"></div>
 	  </div>
 	</div>
       </div>

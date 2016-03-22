@@ -11,7 +11,11 @@ distribution.
 ## Dependencies ##
 
 If you plan to run scans from a machine, install
-[Nmap](http://nmap.org/) and optionally [ZMap](https://zmap.io/).
+[Nmap](http://nmap.org/) and optionally [ZMap](https://zmap.io/) and
+[Masscan](https://github.com/robertdavidgraham/masscan). If you want
+to integrate screenshots, install
+[Tesseract](https://github.com/tesseract-ocr/tesseract) and
+[PhantomJS](http://phantomjs.org/).
 
 If you plan to analyze PCAP file on a machine, install
 [Bro](http://www.bro.org/) (version 2.3 minimum) and
@@ -23,6 +27,8 @@ version 2.6 minimum (prefer 2.7), with the following modules:
 
   * [Crypto](http://www.pycrypto.org/)
   * [pymongo](http://api.mongodb.org/python/) version 2.7.2 minimum.
+  * [PIL](http://www.pythonware.com/products/pil/) optional, to trim
+    screenshots.
 
 ## Installation ##
 
@@ -31,12 +37,12 @@ The installation of [IVRE](README.md) itself can be done by:
   * using the `setup.py` (classical `./setup.py build; sudo ./setup.py
     install`) script.
 
-  * using [pip](https://pypi.python.org/pypi/pip): with on a
-    Debian-based system for example, install the packages `python-pip`
-    and `python-dev` (needed to build dependencies) and run `pip
-    install ivre` (this will download and install for you IVRE and its
-    Python dependencies from [PyPI](https://pypi.python.org), the
-    Python Package Index).
+  * using [pip](https://pypi.python.org/pypi/pip): on a Debian-based
+    system for example, install the packages `python-pip` and
+    `python-dev` (needed to build dependencies) and run `pip install
+    ivre` (this will download and install for you IVRE and its Python
+    dependencies from [PyPI](https://pypi.python.org), the Python
+    Package Index).
 
   * building an RPM package (you can use the provided `buildrpm`
     script, or use the `setup.py` script with your own options) and
@@ -81,39 +87,39 @@ the `ivre/config.py` file.
 
 It might be a good idea to have a read-only account everywhere except
 for some specific users or hosts that need write access to the
-database (the users that insert scan results with `nmap2db`, the users
-or the hosts that run `p0f2db` and/or `passiverecon2db`). It is best
-to avoid using a configuration with write access to the database when
-you only need a read access. This can be achieved with users or hosts
-dedicated to insertion tasks.
+database (the users that insert scan results with `ivre scan2db`, the
+users or the hosts that run `ivre p0f2db` and/or `ivre
+passiverecon2db`). It is best to avoid using a configuration with
+write access to the database when you only need a read access. This
+can be achieved with users or hosts dedicated to insertion tasks.
 
 ## DB creation ##
 
 Once IVRE has been properly configured, it's time to initialize its
 databases.
 
-For that, the command-line tools (namely `ipdata`, `ipinfo`, `scancli`
-and `runscans-agentdb`, respectively for information about IP
-addresses, passive information, active information and running scans
-through agents) have a `--init` option.
+For that, the command-line tools (namely `ivre ipdata`, `ivre ipinfo`,
+`ivre scancli` and `ivre runscansagentdb`, respectively for
+information about IP addresses, passive information, active
+information and running scans through agents) have a `--init` option.
 
 So you can run, with a user or from a host where the configuration has
 a write access to the database (add `< /dev/null` to skip the
 confirmation):
 
-    $ scancli --init
+    $ ivre scancli --init
     This will remove any scan result in your database. Process ? [y/N] y
-    $ ipinfo --init
+    $ ivre ipinfo --init
     This will remove any passive information in your database. Process ? [y/N] y
-    $ ipdata --init
+    $ ivre ipdata --init
     This will remove any country/AS information in your database. Process ? [y/N] y
-    # runscans-agentdb --init
+    # ivre runscansagentdb --init
     This will remove any agent and/or scan in your database and files. Process ? [y/N] y
 
 ### Getting IP data ###
 
-    # ipdata --download
-    $ ipdata --import-all --dont-feed-ipdata-cols
+    # ivre ipdata --download
+    $ ivre ipdata --import-all --no-update-passive-db
 
 ### Web Server ###
 
@@ -150,9 +156,23 @@ or (sym)linked at these locations:
  - `[PREFIX]/share/ivre/dokuwiki/media/doc`
      -> `/var/lib/dokuwiki/data/media/`
 
-The values `WEB_SKIP` and `WEB_LIMIT` from IVRE's configuration must
-match the values `skip` and `limit` in the `dflt` object in
-`config.js`.
+The value `WEB_LIMIT` from IVRE's configuration must match the value
+`limit` in the `dflt` object in `config.js`.
+
+### Getting HTTP screenshots ###
+
+Nmap does not take HTTP screenshots by default. To do so, you need to
+install the NSE script and the PhantomJS script manually which are
+included in the docker files. The NSE file needs to be installed in
+your nmap scripts folder. The `screenshot.js` needs to be copied
+somewhere according to your PATH environment variable. For example, on
+a Debian-based with nmap installed from sources:
+
+    # cp docker/client/http-screenshot.nse /usr/local/share/nmap/scripts/
+    # cp docker/client/screenshot.js /usr/local/bin/
+    # nmap --script-updatedb
+
+You also need to install PhantomJS to be able to execute `screenshot.js`.
 
 # Agent #
 

@@ -17,8 +17,11 @@
 # along with IVRE. If not, see <http://www.gnu.org/licenses/>.
 
 import ivre.db
+import ivre.utils
+import ivre.xmlnmap
 
 import os
+import sys
 
 def recursive_filelisting(base_directories):
     "Iterator on filenames in base_directories"
@@ -54,9 +57,13 @@ def main():
     parser.add_argument('-s', '--source', default=None,
                         help='Scan source.')
     parser.add_argument('-t', '--test', action='store_true',
-                        help='Test mode.')
-    parser.add_argument('--port', action='store_true',
-                        help='Need ports.')
+                        help='Test mode (JSON output).')
+    parser.add_argument('--test-normal', action='store_true',
+                        help='Test mode ("normal" Nmap output).')
+    parser.add_argument('--ports', '--port', action='store_true',
+                        help='Store only hosts with a "ports" element.')
+    parser.add_argument('--open-ports', action='store_true',
+                        help='Store only hosts with open ports.')
     parser.add_argument('--never-archive', action='store_true',
                         help='Never archive.')
     parser.add_argument('--archive', '--archive-same-host', action='store_true',
@@ -75,16 +82,17 @@ def main():
     parser.add_argument('-r', '--recursive', action='store_true',
                         help='Import all files from given directories.')
     args = parser.parse_args()
-    source = None
     database = ivre.db.db.nmap
     categories = args.categories.split(',') if args.categories else []
     if args.test:
         database = ivre.db.DBNmap()
+    if args.test_normal:
+        database = ivre.db.DBNmap(output_mode="normal")
     if args.never_archive:
-        def gettoarchive(addr, source):
+        def gettoarchive(addr, _):
             return []
     elif args.archive:
-        def gettoarchive(addr, source):
+        def gettoarchive(addr, _):
             return database.get(database.searchhost(addr))
     else:  #args.archive_same_host_and_source
         def gettoarchive(addr, source):
@@ -98,14 +106,15 @@ def main():
         scans = args.scan
     count = 0
     for scan in scans:
-        if database.store_scan(
-                scan,
-                categories=categories, source=args.source,
-                needports=args.port, gettoarchive=gettoarchive,
-                force_info=args.force_info, merge=args.merge,
-        ):
-            count += 1
+        try:
+            if database.store_scan(
+                    scan,
+                    categories=categories, source=args.source,
+                    needports=args.ports, needopenports=args.open_ports,
+                    gettoarchive=gettoarchive, force_info=args.force_info,
+                    merge=args.merge,
+            ):
+                count += 1
+        except Exception as exc:
+            sys.stderr.write(ivre.utils.warn_exception(exc, fname=scan))
     print "%d results imported." % count
-
-if __name__ == '__main__':
-    main()

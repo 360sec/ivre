@@ -41,7 +41,7 @@ from ivre import config, utils
 from ivre.db import db
 
 
-JS_HEADERS = 'Content-Type: application/javascript\r\n\r\n'
+JS_HEADERS = 'Content-Type: application/javascript\r\n'
 IPADDR = re.compile('^\\d+\\.\\d+\\.\\d+\\.\\d+$')
 NETADDR = re.compile('^\\d+\\.\\d+\\.\\d+\\.\\d+'
                      '/\\d+(\\.\\d+\\.\\d+\\.\\d+)?$')
@@ -57,6 +57,13 @@ def js_alert(ident, level, message):
             '' % {"ident": ident, "level": level, "levelup": level.upper(),
                   "message": message.replace('"', '\\"')})
 
+
+def js_del_alert(ident):
+    """This function returns a string containing JS code to
+    remove an alert message.
+
+    """
+    return 'try {del_message("%s");} catch(err) {}\n' % ident
 
 
 def check_referer():
@@ -76,7 +83,7 @@ def check_referer():
         if host is None:
             # In case the server does not provide the environment
             # variable HTTP_HOST, which is the case for at least the
-            # test Web server included with IVRE (httpd-ivre,
+            # test Web server included with IVRE (ivre httpd,
             # implemented using Python BaseHTTPServer and
             # CGIHTTPServer modules, see
             # https://bugs.python.org/issue10486).
@@ -90,6 +97,7 @@ def check_referer():
         referer_ok = referer in config.WEB_ALLOWED_REFERERS
     if not referer_ok:
         sys.stdout.write(JS_HEADERS)
+        sys.stdout.write("\r\n")
         sys.stdout.write(
             js_alert(
                 "referer", "error",
@@ -218,6 +226,11 @@ QUERIES = {
 }
 
 def _parse_query(query):
+    """Returns a DB filter (valid for db.nmap) from a query string
+    usable in WEB_DEFAULT_INIT_QUERY and WEB_INIT_QUERIES
+    configuration items.
+
+    """
     if query is None:
         query = 'full'
     query = query.split(':')
@@ -244,7 +257,7 @@ def get_init_flt():
     return DEFAULT_INIT_QUERY
 
 
-def flt_from_query(query):
+def flt_from_query(query, base_flt=None):
     """Return a tuple (`flt`, `archive`, `sortby`, `unused`, `skip`,
     `limit`):
 
@@ -265,9 +278,9 @@ def flt_from_query(query):
     unused = []
     sortby = []
     archive = False
-    skip = config.WEB_SKIP
-    limit = config.WEB_LIMIT
-    flt = get_init_flt()
+    skip = 0
+    limit = None
+    flt = get_init_flt() if base_flt is None else base_flt
     def add_unused(neg, param, value):
         """Add to the `unused` list a string representing (neg, param,
         value).
@@ -282,8 +295,6 @@ def flt_from_query(query):
             skip = int(value)
         elif not neg and param == 'limit':
             limit = int(value)
-            if config.WEB_MAXRESULTS is not None:
-                limit = min(limit, config.WEB_MAXRESULTS)
         elif param == "archives":
             archive = not neg
         elif param == "id":
@@ -298,6 +309,14 @@ def flt_from_query(query):
             flt = db.nmap.flt_and(flt, db.nmap.searchrange(
                 *value.replace('-', ',').split(',', 1),
                 neg=neg))
+        elif param == "label":
+            group, lab = ((None, None)
+                          if value is None else
+                          map(utils.str2regexp, value.split(':', 1))
+                          if ':' in value else
+                          (utils.str2regexp(value), None))
+            flt = db.nmap.flt_and(flt, db.nmap.searchlabel(group=group,
+                                                           label=lab, neg=neg))
         elif param == "countports":
             vals = [int(val) for val in value.replace('-', ',').split(',', 1)]
             if len(vals) == 1:
@@ -530,23 +549,20 @@ def flt_from_query(query):
             else:
                 sortby.append((value, 1))
         elif param in ['open', 'filtered', 'closed']:
-            if '_' in value:
-                value = value.replace('_', '/')
-            if '/' in value:
-                proto, port = value.split('/')
-            else:
-                proto, port = "tcp", value
-            port = port.split(',')
-            if len(port) > 1:
+            value = value.replace('_', '/').split(',')
+            protos = {}
+            for port in value:
+                if '/' in port:
+                    proto, port = port.split('/')
+                else:
+                    proto, port = "tcp", port
+                protos.setdefault(proto, []).append(int(port))
+            for proto, ports in protos.iteritems():
                 flt = db.nmap.flt_and(
                     flt,
-                    db.nmap.searchports([int(p) for p in port], protocol=proto,
-                                        state=param))
-            else:
-                flt = db.nmap.flt_and(
-                    flt,
-                    db.nmap.searchport(int(port[0]), protocol=proto,
-                                       state=param)
+                    db.nmap.searchport(ports[0], protocol=proto, state=param)
+                    if len(ports) == 1 else
+                    db.nmap.searchports(ports, protocol=proto, state=param)
                 )
         elif param == 'otheropenport':
             flt = db.nmap.flt_and(

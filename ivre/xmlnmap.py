@@ -25,17 +25,16 @@ This sub-module contains the parser for nmap's XML output files.
 
 """
 
-from ivre import utils, config
+from ivre import utils, config, nmapout
 
 from xml.sax.handler import ContentHandler, EntityResolver
 import datetime
 import sys
 import os
 import re
-import json
 import bson
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Scripts that mix elem/table tags with and without key attributes,
 # which is not supported for now
@@ -91,7 +90,7 @@ def add_smb_ls_data(script):
     cases.
 
     """
-    assert(script["id"] == "smb-ls")
+    assert script["id"] == "smb-ls"
     result = {"total": {"files": 0, "bytes": 0}, "volumes": []}
     state = 0 # outside a volume
     cur_vol = None
@@ -145,7 +144,7 @@ def add_nfs_ls_data(script):
     cases.
 
     """
-    assert(script["id"] == "nfs-ls")
+    assert script["id"] == "nfs-ls"
     result = {"total": {"files": 0, "bytes": 0}, "volumes": []}
     state = 0 # outside a volume
     cur_vol = None
@@ -202,7 +201,7 @@ def add_afp_ls_data(script):
     cases.
 
     """
-    assert(script["id"] == "afp-ls")
+    assert script["id"] == "afp-ls"
     result = {"total": {"files": 0, "bytes": 0}, "volumes": []}
     state = 0 # volumes / listings
     cur_vol = None
@@ -258,11 +257,11 @@ def add_ftp_anon_data(script):
     by humans.
 
     """
-    assert(script["id"] == "ftp-anon")
+    assert script["id"] == "ftp-anon"
     # expressions that match lines, based on large data collection
     subexprs = {
-        "user": '(?:[a-zA-Z0-9\\._-]+(?:\\s+[NLOPQS])?|\\\\x[0-9A-F]{2}|'
-        '\\*|\\(\\?\\))',
+        "user": ('(?:[a-zA-Z0-9\\._-]+(?:\\s+[NLOPQS])?|\\\\x[0-9A-F]{2}|'
+                 '\\*|\\(\\?\\))'),
         "fname": '[A-Za-z0-9%s]+' % re.escape(" ?._@[](){}~#'&$%!+\\-/,|`="),
         "perm": '[a-zA-Z\\?-]{10}',
         "day": '[0-3]?[0-9]',
@@ -270,8 +269,8 @@ def add_ftp_anon_data(script):
         "month": "(?:[0-1]?[0-9]|[A-Z][a-z]{2}|[A-Z]{3})",
         "time": "[0-9]{1,2}\\:[0-9]{2}(?:\\:[0-9]{1,2})?",
         "windate": "[0-9]{2}-[0-9]{2}-[0-9]{2,4} +[0-9]{2}:[0-9]{2}(?:[AP]M)?",
-        "vxworksdate": "[A-Z][a-z]{2}-[0-9]{2}-[0-9]{2,4}\\s+"
-        "[0-9]{2}:[0-9]{2}:[0-9]{2}",
+        "vxworksdate": ("[A-Z][a-z]{2}-[0-9]{2}-[0-9]{2,4}\\s+"
+                        "[0-9]{2}:[0-9]{2}:[0-9]{2}"),
     }
     subexprs["date"] = "(?:%s)" % "|".join([
         "%(month)s\\s+%(day)s\\s+(?:%(year)s|%(time)s)" % subexprs,
@@ -466,10 +465,17 @@ IGNORE_SCRIPT_OUTPUTS_REGEXP = set([
 MASSCAN_SERVICES_NMAP_SCRIPTS = {
     "http": "http-headers",
     "title": "http-title",
+    "ftp": "banner",
+    "unknown": "banner",
+    "ssh": "banner",
+    "vnc": "banner",
 }
 
 MASSCAN_SERVICES_NMAP_SERVICES = {
+    "ftp": "ftp", # masscan can confuse smtp (for example) for ftp
     "http": "http",
+    "ssh": "ssh",
+    "vnc": "vnc",
 }
 
 MASSCAN_ENCODING = re.compile(re.escape("\\x") + "([0-9a-f]{2})")
@@ -552,9 +558,11 @@ class NmapHandler(ContentHandler):
 
     """
 
-    def __init__(self, fname, filehash, needports=False, **_):
+    def __init__(self, fname, filehash, needports=False, needopenports=False,
+                 **_):
         ContentHandler.__init__(self)
         self._needports = needports
+        self._needopenports = needopenports
         self._curscan = None
         self._curscript = None
         self._curhost = None
@@ -568,8 +576,9 @@ class NmapHandler(ContentHandler):
         self._fname = fname
         self._filehash = filehash
         self.scanner = "nmap"
+        self.need_scan_doc = False
         if config.DEBUG:
-            sys.stderr.write("READING %r (%r)" % (fname, self._filehash))
+            sys.stderr.write("READING %r (%r)\n" % (fname, self._filehash))
 
     @staticmethod
     def _to_binary(data):
@@ -600,10 +609,6 @@ class NmapHandler(ContentHandler):
         """
         pass
 
-    def outputresults(self):
-        """Subclasses may display any results here."""
-        pass
-
     def startElement(self, name, attrs):
         if name == 'nmaprun':
             if self._curscan is not None:
@@ -632,6 +637,9 @@ class NmapHandler(ContentHandler):
                     self._curhost[field] = datetime.datetime.utcfromtimestamp(
                         int(self._curhost[field])
                     )
+            if 'starttime' not in self._curhost and 'endtime' in self._curhost:
+                # Masscan
+                self._curhost['starttime'] = self._curhost['endtime']
         elif name == 'address' and self._curhost is not None:
             if attrs['addrtype'] != 'ipv4':
                 self._curhost.setdefault(
@@ -668,9 +676,11 @@ class NmapHandler(ContentHandler):
                 sys.stderr.write("WARNING, self._curextraports should be None"
                                  " at this point "
                                  "(got %r)\n" % self._curextraports)
-            self._curextraports = {attrs['state']: [int(attrs['count']), {}]}
+            self._curextraports = {
+                attrs['state']: {"total": int(attrs['count']), "reasons": {}},
+            }
         elif name == 'extrareasons' and self._curextraports is not None:
-            self._curextraports[self._curextraports.keys()[0]][1][
+            self._curextraports[next(iter(self._curextraports))]["reasons"][
                 attrs['reason']] = int(attrs['count'])
         elif name == 'port':
             if self._curport is not None:
@@ -816,13 +826,16 @@ class NmapHandler(ContentHandler):
 
     def endElement(self, name):
         if name == 'nmaprun':
-            self._storescan()
+            if self.need_scan_doc:
+                self._storescan()
             self._curscan = None
         elif name == 'host':
             # masscan -oX output has no "state" tag
             if self._curhost.get('state', 'up') == 'up' and (
-                    'ports' in self._curhost
-                    or not self._needports):
+                    not self._needports
+                    or 'ports' in self._curhost) and (
+                        not self._needopenports
+                        or self._curhost.get('openports', {}).get('count')):
                 if 'openports' not in self._curhost:
                     self._curhost['openports'] = {'count': 0}
                 self._pre_addhost()
@@ -891,14 +904,40 @@ class NmapHandler(ContentHandler):
                     self._curscript
                 )
                 if fname is not None:
-                    current['screenshot'] = "field"
-                    with open(os.path.join(
-                            os.path.dirname(self._fname), fname)) as fdesc:
-                        data = fdesc.read()
-                    current['screendata'] = self._to_binary(data)
-                    screenwords = utils.screenwords(data)
-                    if screenwords is not None:
-                        current['screenwords'] = screenwords
+                    exceptions = []
+                    for full_fname in [fname,
+                                       os.path.join(
+                                           os.path.dirname(self._fname),
+                                           fname)]:
+                        try:
+                            with open(full_fname) as fdesc:
+                                data = fdesc.read()
+                                trim_result = utils.trim_image(data)
+                                if trim_result:
+                                    # When trim_result is False, the image no
+                                    # longer exists after trim
+                                    if trim_result is not True:
+                                        # Image has been trimmed
+                                        data = trim_result
+                                    current['screenshot'] = "field"
+                                    current['screendata'] = self._to_binary(
+                                        data
+                                    )
+                                    screenwords = utils.screenwords(data)
+                                    if screenwords is not None:
+                                        current['screenwords'] = screenwords
+                        except Exception as exc:
+                            exceptions.append(exc)
+                        else:
+                            break
+                    for exc in exceptions:
+                        sys.stderr.write(
+                            utils.warn_exception(
+                                exc,
+                                scanfile=self._fname,
+                                fname=full_fname,
+                            )
+                        )
             if ignore_script(self._curscript):
                 self._curscript = None
                 return
@@ -924,11 +963,11 @@ class NmapHandler(ContentHandler):
                 # stop recording characters
                 self._curdata = None
             self._curtablepath.pop()
-        elif name == 'hostscript':
+        elif name == 'hostscript' and 'scripts' in self._curhost:
             # "fake" port element, without a "protocol" key and with the
-            # magic value "host" for the "port" key.
+            # magic value -1 for the "port" key.
             self._curhost.setdefault('ports', []).append({
-                "port": "host",
+                "port": -1,
                 "scripts": self._curhost.pop('scripts')
             })
         elif name == 'trace':
@@ -989,10 +1028,9 @@ class Nmap2Txt(NmapHandler):
 
     """Simple "test" handler, outputs resulting JSON as text."""
 
-    def __init__(self, fname, needports=False, **kargs):
+    def __init__(self, fname, **kargs):
         self._db = []
-        NmapHandler.__init__(self, fname, needports=needports,
-                             **kargs)
+        NmapHandler.__init__(self, fname, **kargs)
 
     @staticmethod
     def _to_binary(data):
@@ -1000,9 +1038,6 @@ class Nmap2Txt(NmapHandler):
 
     def _addhost(self):
         self._db.append(self._curhost)
-
-    def outputresults(self):
-        print json.dumps(self._db, default=utils.serialize)
 
 
 class Nmap2Mongo(NmapHandler):
@@ -1051,6 +1086,9 @@ class Nmap2Mongo(NmapHandler):
                     self._curhost['infos'].update(data)
         if self.source:
             self._curhost['source'] = self.source
+        # We are about to insert data based on this file, so we want
+        # to save the scan document
+        self.need_scan_doc = True
         if self.merge and self._db.nmap.merge_host(self._curhost):
             return
         self._db.nmap.archive_from_func(self._curhost, self._gettoarchive)

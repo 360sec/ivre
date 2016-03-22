@@ -16,23 +16,29 @@
  * along with IVRE. If not, see <http://www.gnu.org/licenses/>.
  */
 
-/*
- * IMPORTANT:
- *
- * The values set here only affect the interface. The important
- * settings change the (server-side) CGIs behavior (rather than the
- * client-side, user-controlled interface) and can be modified in
- * ivre.conf.
- */
+var ALL_SETS;
 
-var config = {
-    /* default values, not needed */
-    "notesbase": "/dokuwiki/#IP#",
-    "cgibase": "/cgi-bin/scanjson.py",
-    "dflt": {
-	"limit": 10,
-    },
-    "warn_dots_count": 20000,
-    "publicsrv": false,
-    "uploadok": false,
-};
+function init_compare() {
+    if(!(wait_filter(init_compare)))
+	return;
+
+    sync_hash_filter(FILTER);
+
+    window.onhashchange();
+    //var all_sets = [];
+    for(var name in FILTERS) {
+	if(name.substr(0, 3) === "set") {
+	    var filter = FILTERS[name];
+	    filter.on_query_update();
+	    //all_sets.push(filter);
+	}
+    }
+    // FIXME work w/ arbitrary number of sets
+    ALL_SETS = new SubFilter("all_sets", FILTERS.set1, FILTERS.set2);
+    ALL_SETS.on_query_update();
+    var scope = get_scope("IvreCompareCtrl");
+    scope.$apply(function() {
+	scope.all_sets = ALL_SETS;
+    });
+    ALL_SETS.need_apply.push(scope);
+}

@@ -1,4 +1,6 @@
-<!--
+#! /usr/bin/env phantomjs
+
+/*
   This file is part of IVRE.
   Copyright 2011 - 2015 Pierre LALET <pierre.lalet@cea.fr>
 
@@ -14,17 +16,35 @@
 
   You should have received a copy of the GNU General Public License
   along with IVRE. If not, see <http://www.gnu.org/licenses/>.
--->
+ */
 
-<div class="result-container"
-     ng-repeat="host in results"
-     >
-  <div host-summary=""></div>
-  <div class="full">
-    <!-- ports w/ scripts, etc. -->
-    <dt ng-repeat="port in ::host.ports | orderBy:['protocol','port']"
-        ng-if="::port.port !== -1 && port.screenshot">
-      <div port-summary=""></div>
-    </dt>
-  </div>
-</div>
+/*
+  Simple Web screenshot script, ready for use with http-screenshot.nse
+  Nmap script.
+
+  Some values are hard-coded:
+    - timeout: 10s
+    - format: JPEG
+    - image quality: 90%
+
+  Requires phantomjs.
+
+  Usage: screenshot.js URL FILENAME
+ */
+
+var system = require('system');
+var webpage = require('webpage');
+
+function capture(url, fname) {
+    var page = webpage.create();
+    page.open(url, function() {
+	page.evaluate(function(){
+	    document.body.bgColor = 'white';
+        });
+	page.render(fname, {format: 'jpeg', quality: '90'});
+	phantom.exit();
+    });
+}
+
+capture(system.args[1], system.args[2])
+setTimeout(phantom.exit, 10000);

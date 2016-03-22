@@ -21,7 +21,7 @@
 database backends.
 """
 
-from ivre import config, utils, xmlnmap
+from ivre import config, utils, xmlnmap, nmapout
 
 import sys
 import socket
@@ -230,9 +230,12 @@ class DB(object):
 
 class DBNmap(DB):
 
-    content_handler = xmlnmap.Nmap2Txt
-
-    def __init__(self):
+    def __init__(self, output_mode="json", output=sys.stdout):
+        self.content_handler = xmlnmap.Nmap2Txt
+        self.output_function = {
+            "normal": nmapout.displayhosts,
+        }.get(output_mode, nmapout.displayhosts_json)
+        self.output = output
         try:
             import argparse
             self.argparser = argparse.ArgumentParser(add_help=False)
@@ -285,6 +288,14 @@ class DBNmap(DB):
                                     help='show only results with a number of open '
                                     'ports NOT within the provided range', nargs=2)
         self.argparser.add_argument('--service', metavar='SVC')
+        self.argparser.add_argument('--label', metavar='GROUP[:TAG]',
+                                    help='retrieve host labeled with TAG '
+                                    'in GROUP, if TAG is not provided, retrieve '
+                                    'hosts with at least one TAG in GROUP')
+        self.argparser.add_argument('--no-label', metavar='GROUP[:TAG]',
+                                    help='retrieve host WITHOUT the label TAG '
+                                    'in GROUP, if TAG is not provided, retrieve '
+                                    'hosts WITHOUT any tag in GROUP')
         self.argparser.add_argument('--script', metavar='ID[:OUTPUT]')
         self.argparser.add_argument('--svchostname')
         self.argparser.add_argument('--os')
@@ -319,14 +330,14 @@ class DBNmap(DB):
             return False
         with utils.open_file(fname) as fdesc:
             fchar = fdesc.read(1)
-            try:
-                store_scan_function = {
-                    '<': self.store_scan_xml,
-                    '{': self.store_scan_json,
-                }[fchar]
-            except KeyError:
-                raise ValueError("Unknown file type %s" % fname)
-            return store_scan_function(fname, filehash=scanid, **kargs)
+        try:
+            store_scan_function = {
+                '<': self.store_scan_xml,
+                '{': self.store_scan_json,
+            }[fchar]
+        except KeyError:
+            raise ValueError("Unknown file type %s" % fname)
+        return store_scan_function(fname, filehash=scanid, **kargs)
 
     def store_scan_xml(self, fname, **kargs):
         """This method parses an XML scan result, displays a JSON
@@ -342,13 +353,13 @@ class DBNmap(DB):
         try:
             content_handler = self.content_handler(fname, **kargs)
         except Exception as exc:
-            sys.stderr.write("WARNING: %s [%r] [fname=%s]\n" % (
-                exc.message, exc, fname))
+            sys.stderr.write(utils.warn_exception(exc, fname=fname))
         else:
             parser.setContentHandler(content_handler)
             parser.setEntityResolver(xmlnmap.NoExtResolver())
             parser.parse(utils.open_file(fname))
-            content_handler.outputresults()
+            if self.output_function is not None:
+                self.output_function(content_handler._db, out=self.output)
             return True
         return False
 
@@ -382,12 +393,13 @@ class DBNmap(DB):
         self.remove(rec)
         return True
 
-    def store_scan_json(self, fname, filehash=None, needports=False,
+    def store_scan_json(self, fname, filehash=None,
+                        needports=False, needopenports=False,
                         categories=None, source=None,
                         gettoarchive=None, add_addr_infos=True,
                         force_info=False, merge=False):
         """This method parses a JSON scan result as exported using
-        `scancli --json > file`, displays the parsing result, and
+        `ivre scancli --json > file`, displays the parsing result, and
         return True if everything went fine, False otherwise.
 
         In backend-specific subclasses, this method stores the result
@@ -397,6 +409,7 @@ class DBNmap(DB):
         """
         if categories is None:
             categories = []
+        need_scan_doc = False
         with utils.open_file(fname) as fdesc:
             for line in fdesc:
                 host = self.json2dbrec(json.loads(line))
@@ -418,11 +431,18 @@ class DBNmap(DB):
                         data = func(host['addr'])
                         if data:
                             host['infos'].update(data)
-                if not needports or 'ports' in host:
+                if ((not needports or 'ports' in host) and
+                    (not needopenports or
+                     host.get('openports', {}).get('count'))):
+                    # We are about to insert data based on this file,
+                    # so we want to save the scan document
+                    need_scan_doc = True
                     if merge and self.merge_host(host):
-                        return True
-                    self.archive_from_func(host, gettoarchive)
-                    self.store_host(host)
+                        pass
+                    else:
+                        self.archive_from_func(host, gettoarchive)
+                        self.store_host(host)
+        if need_scan_doc:
             self.store_scan_doc({'_id': filehash})
         return True
 
@@ -431,7 +451,8 @@ class DBNmap(DB):
         return host
 
     def store_host(self, host):
-        print json.dumps([host])
+        if self.output_function is not None:
+            self.output_function([host], out=self.output)
 
     def store_scan_doc(self, scan):
         pass

@@ -18,6 +18,35 @@
 
 /*********** Common util functions ***************/
 
+/* Workaround for cross-browser handling of .hash: Firefox 41+ (at
+   least) encodes document.location.hash, while Chromium (at least)
+   does not. Hope there is a better solution. */
+
+function are_hash_encoded() {
+    var parser = document.createElement("a");
+    parser.href = "# #";
+    return parser.hash !== "# #";
+}
+
+var HASH_ENCODED = are_hash_encoded();
+
+function get_hash() {
+    var res = document.location.hash.substr(1);
+    if(HASH_ENCODED){
+	return decodeURIComponent(res);
+    }
+    return res;
+}
+
+function set_hash(value) {
+    if(HASH_ENCODED){
+	document.location.hash = '#' + encodeURIComponent(value);
+    }
+    else {
+	document.location.hash = '#' + value;
+    }
+}
+
 /* Chrome */
 // if(String.prototype.repeat === undefined) {
 //     String.prototype.repeat = function(num) {
@@ -160,7 +189,8 @@ jQuery.fn.getBg = function() {
 
 	var color = $(this).css('background-color');
 
-	if(color != 'transparent' && color != 'rgba(0, 0, 0, 0)' && color != undefined) 
+	if(color != 'transparent' && color != 'rgba(0, 0, 0, 0)' &&
+	   color !== undefined)
 	    return color;
     }).css('background-color');
 };
@@ -170,4 +200,96 @@ function array_swap(arr, x, y) {
     arr[x] = arr[y];
     arr[y] = tmp;
     return arr;
+}
+
+function getPagePath() {
+    var base = document.location.pathname;
+    if(base.endsWith('/')) {
+	return base;
+    }
+    var idx = base.lastIndexOf('/');
+    if(idx === -1) {
+	return base + '/';
+    }
+    if(base.endsWith('.html')) {
+	return base.substring(0, idx + 1);
+    }
+    return base + '/';
+}
+
+function getPageName() {
+    var base = document.location.pathname;
+    if(base.endsWith('/')) {
+	return 'index';
+    }
+    var idx = base.lastIndexOf('/');
+    if(idx === -1) {
+	return 'index';
+    }
+    if(base.endsWith('.html')) {
+	return base.substring(idx + 1, base.length - 5);
+    }
+    return 'index';
+}
+
+function exportDOM() {
+    // Get current DOM
+    var reportDOM = $("body").clone();
+
+    // Clean it
+    reportDOM.find(".no-export").remove();
+    reportDOM.find('style').remove();
+    reportDOM.find('script').remove();
+
+    // Get full CSS
+    var cssText = "";
+    $.each(document.styleSheets, function(sheetIndex, sheet) {
+       $.each(sheet.cssRules || sheet.rules, function(ruleIndex, rule) {
+	   cssText += rule.cssText;
+       });
+    });
+
+    // Convert images
+    reportDOM.find("img[src]").each(function(index, img) {
+	var canvas = document.createElement('canvas');
+	canvas.width = img.width;
+	canvas.height = img.height;
+	var context = canvas.getContext('2d');
+	context.drawImage(img, 0, 0);
+	img.src = canvas.toDataURL("image/png");
+    });
+
+    // Rebuild a web page
+    var content = "<html><head><style>" + cssText + "</style></head><body>" + reportDOM.html() + "</body></html>";
+    return new Blob([content], {"type": "text\/html" });
+}
+
+function download_blob(blob, title) {
+    // Build a link element to download Blob
+    var div = document.body;
+    var a = document.createElement('a');
+    a.onclick = function() {
+	this.setAttribute('href', window.URL.createObjectURL(blob));
+	return true;
+    };
+    if(title === undefined)
+	title = "Unknown.bin";
+    a.download = title;
+    a.href = "#";
+
+    // Trigger click event
+    div.appendChild(a);
+    a.click();
+
+    // Clean
+    document.removeElement(a);
+    return false;
+}
+
+function find_parent(base, tagname) {
+    tagname = tagname.toUpperCase();
+    while(base.tagName !== tagname) {
+	base = base.parentNode;
+    }
+    return base;
 }

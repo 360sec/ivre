@@ -408,14 +408,14 @@ class MongoDB(DB):
 
 class MongoDBNmap(MongoDB, DBNmap):
 
-    content_handler = xmlnmap.Nmap2Mongo
-    needunwind = ["categories", "ports", "ports.scripts",
+    needunwind = ["categories", "labels", "labels.tags",
+                  "ports", "ports.scripts",
                   "ports.scripts.ssh-hostkey",
                   "ports.scripts.smb-enum-shares.shares",
                   "ports.scripts.ls.volumes",
                   "ports.scripts.ls.volumes.files",
                   "ports.screenwords",
-                  "extraports.filtered", "traces", "traces.hops",
+                  "traces", "traces.hops",
                   "os.osmatch", "os.osclass", "hostnames",
                   "hostnames.domains", "cpes"]
 
@@ -426,6 +426,8 @@ class MongoDBNmap(MongoDB, DBNmap):
                  **kargs):
         MongoDB.__init__(self, host, dbname, **kargs)
         DBNmap.__init__(self)
+        self.content_handler = xmlnmap.Nmap2Mongo
+        self.output_function = None
         self.colname_scans = colname_scans
         self.colname_hosts = colname_hosts
         self.colname_oldscans = colname_oldscans
@@ -439,6 +441,11 @@ class MongoDBNmap(MongoDB, DBNmap):
                 ([('endtime', pymongo.ASCENDING)], {}),
                 ([('source', pymongo.ASCENDING)], {}),
                 ([('categories', pymongo.ASCENDING)], {}),
+                ([
+                    ('labels.group', pymongo.ASCENDING),
+                    ('labels.tags', pymongo.ASCENDING),
+                ],
+                 {"sparse": True}),
                 ([('hostnames.domains', pymongo.ASCENDING)], {}),
                 ([('traces.hops.domains', pymongo.ASCENDING)], {}),
                 ([('openports.count', pymongo.ASCENDING)], {}),
@@ -494,6 +501,7 @@ class MongoDBNmap(MongoDB, DBNmap):
                 1: (2, self.migrate_schema_hosts_1_2),
                 2: (3, self.migrate_schema_hosts_2_3),
                 3: (4, self.migrate_schema_hosts_3_4),
+                4: (5, self.migrate_schema_hosts_4_5),
             },
         }
         self.schema_migrations[self.colname_oldhosts] = self.schema_migrations[
@@ -578,8 +586,8 @@ creates the default indexes."""
         open ports based researches.
 
         """
-        assert("schema_version" not in doc)
-        assert("openports" not in doc)
+        assert "schema_version" not in doc
+        assert "openports" not in doc
         update = {"$set": {"schema_version": 1}}
         updated_ports = False
         openports = {}
@@ -612,7 +620,7 @@ creates the default indexes."""
         nmap-services file.
 
         """
-        assert(doc["schema_version"] == 1)
+        assert doc["schema_version"] == 1
         update = {"$set": {"schema_version": 2}}
         update_ports = False
         for port in doc.get("ports", []):
@@ -632,7 +640,7 @@ creates the default indexes."""
         library.
 
         """
-        assert(doc["schema_version"] == 2)
+        assert doc["schema_version"] == 2
         update = {"$set": {"schema_version": 3}}
         updated_ports = False
         updated_scripts = False
@@ -668,7 +676,7 @@ creates the default indexes."""
         creates a "fake" port entry to store host scripts.
 
         """
-        assert(doc["schema_version"] == 3)
+        assert doc["schema_version"] == 3
         update = {"$set": {"schema_version": 4}}
         if 'scripts' in doc:
             doc.setdefault('ports', []).append({
@@ -677,6 +685,33 @@ creates the default indexes."""
             })
             update["$set"]["ports"] = doc["ports"]
             update["$unset"] = {"scripts": True}
+        return update
+
+    @staticmethod
+    def migrate_schema_hosts_4_5(doc):
+        """Converts a record from version 4 to version 5. Version 5
+        uses the magic value -1 instead of "host" for "port" in the
+        "fake" port entry used to store host scripts (see
+        `migrate_schema_hosts_3_4()`). Moreover, it changes the
+        structure of the values of "extraports" from [totalcount,
+        {"state": count}] to {"total": totalcount, "state": count}.
+
+        """
+        assert doc["schema_version"] == 4
+        update = {"$set": {"schema_version": 5}}
+        updated_ports = False
+        updated_extraports = False
+        for port in doc.get('ports', []):
+            if port['port'] == 'host':
+                port['port'] = -1
+                updated_ports = True
+        if updated_ports:
+            update["$set"]["ports"] = doc['ports']
+        for state, (total, counts) in doc.get('extraports', {}).items():
+            doc['extraports'][state] = {"total": total, "reasons": counts}
+            updated_extraports = True
+        if updated_extraports:
+            update["$set"]["extraports"] = doc['extraports']
         return update
 
     def get(self, flt, archive=False, **kargs):
@@ -721,8 +756,54 @@ have no effect if it is not expected)."""
         if url == "field":
             return port.get('screendata')
 
+    def set_label(self, flt, group, label, archive=False):
+        """Adds `label` in `group` to every host matching `flt`"""
+        colname = self.colname_oldhosts if archive else self.colname_hosts
+        for host in self.get(flt, archive=archive):
+            labels = host.get('labels', [])
+            try:
+                g_label = (lab for lab in labels
+                           if lab['group'] == group).next()
+            except StopIteration:
+                # group did not exist.
+                g_label = {'group': group, 'tags': [label]}
+                labels.append(g_label)
+            else:
+                if label in g_label['tags']:
+                    continue
+                g_label['tags'].append(label)
+            self.db[colname].update({"_id": host['_id']},
+                                    {"$set": {'labels': labels}})
+
+    def remove_label(self, flt, group=None, label=None, archive=False):
+        """Removes `label` of session `group` from every host matching `flt`.
+
+        If `label` is None, removes the entire `group`. If both
+        `group` and `label` are None, remove all the labels.
+
+        """
+        colname = self.colname_oldhosts if archive else self.colname_hosts
+        flt = self.flt_and(flt, self.searchlabel(group=group, label=label))
+        if group is None and label is None:
+            self.db[colname].update(flt, {"$unset": {'labels': True}},
+                                    multi=True)
+        else:
+            for host in self.get(flt, archive=archive):
+                labels = host['labels']
+                if label is not None:
+                    g_label = (lab for lab in labels
+                               if lab['group'] == group).next()
+                    g_label['tags'].remove(label)
+                if label is None or not g_label['tags']:
+                    labels = [lab for lab in host['labels']
+                              if lab['group'] != group]
+                self.db[colname].update({"_id": host['_id']},
+                                        {"$set": {'labels': labels}}
+                                        if labels else
+                                        {"$unset": {'labels': True}})
+
     def setscreenshot(self, host, port, data, protocol='tcp',
-                      archives=False, overwrite=False):
+                      archive=False, overwrite=False):
         """Sets the content of a port's screenshot."""
         try:
             port = [p for p in host.get('ports', [])
@@ -732,16 +813,23 @@ have no effect if it is not expected)."""
         if 'screenshot' in port and not overwrite:
             return
         port['screenshot'] = "field"
+        trim_result = utils.trim_image(data)
+        if trim_result is False:
+            # Image no longer exists after trim
+            return
+        elif trim_result is not True:
+            # Image has been trimmed
+            data = trim_result
         port['screendata'] = bson.Binary(data)
         screenwords = utils.screenwords(data)
         if screenwords is not None:
             port['screenwords'] = screenwords
         self.db[
-            self.colname_oldhosts if archives else self.colname_hosts
+            self.colname_oldhosts if archive else self.colname_hosts
         ].update({"_id": host['_id']}, {"$set": {'ports': host['ports']}})
 
     def setscreenwords(self, host, port=None, protocol="tcp",
-                       archives=False, overwrite=False):
+                       archive=False, overwrite=False):
         """Sets the `screenwords` attribute based on the screenshot
         data.
 
@@ -772,11 +860,11 @@ have no effect if it is not expected)."""
                 updated = True
         if updated:
             self.db[
-                self.colname_oldhosts if archives else self.colname_hosts
+                self.colname_oldhosts if archive else self.colname_hosts
             ].update({"_id": host['_id']}, {"$set": {'ports': host['ports']}})
 
     def removescreenshot(self, host, port=None, protocol='tcp',
-                         archives=False):
+                         archive=False):
         """Removes screenshots"""
         changed = False
         for p in host.get('ports', []):
@@ -792,7 +880,7 @@ have no effect if it is not expected)."""
                     changed = True
         if changed:
             self.db[
-                self.colname_oldhosts if archives else self.colname_hosts
+                self.colname_oldhosts if archive else self.colname_hosts
             ].update({"_id": host["_id"]}, {"$set": {'ports': host['ports']}})
 
     def getlocations(self, flt, archive=False):
@@ -854,13 +942,11 @@ have no effect if it is not expected)."""
                 rec["scanid"] = list(scanid)
         for fname, function in [("starttime", min), ("endtime", max)]:
             try:
-                rec[fname] = function(rec[fname] for rec in [rec1, rec2]
-                                      if fname in rec)
+                rec[fname] = function(record[fname] for record in [rec1, rec2]
+                                      if fname in record)
             except ValueError:
                 pass
-        rec["state"] = ("up" if "up" in [rec.get("state")
-                                         for rec in [rec1, rec2]]
-                        else rec.get("state"))
+        rec["state"] = "up" if rec1.get("state") == "up" else rec2.get("state")
         if rec["state"] is None:
             del rec["state"]
         rec["categories"] = list(
@@ -948,66 +1034,77 @@ have no effect if it is not expected)."""
             colname_scans = self.colname_scans
         self.db[colname_hosts].remove(spec_or_id=host['_id'])
         for scanid in self.getscanids(host):
-            if self.get({'scanid': scanid}, archive=archive).count() == 0:
+            if self.find_one(colname_hosts, {'scanid': scanid}) is None:
                 self.db[colname_scans].remove(spec_or_id=scanid)
 
-    def archive(self, host):
-        """Archives a given host record. Also archives the
-        corresponding scan and removes the scan from the "not
-        archived" scan collection if not there is no host left in the
-        "not archived" host collumn.
+    def archive(self, host, unarchive=False):
+        """Archives (when `unarchive` is True, unarchives) a given
+        host record. Also (un)archives the corresponding scan and
+        removes the scan from the "not archived" (or "archived") scan
+        collection if not there is no host left in the "not archived"
+        (or "archived") host collumn.
 
         """
-        if self.find_one(self.colname_hosts, {"_id": host['_id']}) is None:
+        col_from_hosts, col_from_scans, col_to_hosts, col_to_scans = (
+            (self.colname_oldhosts, self.colname_oldscans,
+             self.colname_hosts, self.colname_scans)
+            if unarchive else
+            (self.colname_hosts, self.colname_scans,
+             self.colname_oldhosts, self.colname_oldscans)
+        )
+        if self.find_one(col_from_hosts, {"_id": host['_id']}) is None:
             if config.DEBUG:
                 sys.stderr.write(
-                    "WARNING: cannot archive: host %s does not exist"
-                    " in %r\n" % (host['_id'], self.colname_hosts)
+                    "WARNING: cannot %sarchive: host %s does not exist"
+                    " in %r\n" % ("un" if unarchive else "",
+                                  host['_id'], col_from_hosts)
                 )
         # store the host in the archive hosts collection
-        self.db[self.colname_oldhosts].insert(host)
+        self.db[col_to_hosts].insert(host)
         if config.DEBUG:
             sys.stderr.write(
-                "HOST ARCHIVED: %s in %r\n" % (
+                "HOST %sARCHIVED: %s in %r\n" % (
+                    "UN" if unarchive else "",
                     host['_id'],
-                    self.colname_oldhosts,
+                    col_to_hosts,
                 )
             )
         # remove the host from the (not archived) hosts collection
-        self.db[self.colname_hosts].remove(spec_or_id=host['_id'])
+        self.db[col_from_hosts].remove(spec_or_id=host['_id'])
         if config.DEBUG:
             sys.stderr.write(
                 "HOST REMOVED: %s from %r\n" % (
                     host['_id'],
-                    self.colname_hosts,
+                    col_from_hosts,
                 )
             )
         for scanid in self.getscanids(host):
-            scan = self.find_one(self.colname_scans, {'_id': scanid})
+            scan = self.find_one(col_from_scans, {'_id': scanid})
             if scan is not None:
                 # store the scan in the archive scans collection if it
                 # is not there yet
-                if self.find_one(self.colname_oldscans,
+                if self.find_one(col_to_scans,
                                  {'_id': scanid}) is None:
-                    self.db[self.colname_oldscans].insert(scan)
+                    self.db[col_to_scans].insert(scan)
                     if config.DEBUG:
                         sys.stderr.write(
-                            "SCAN ARCHIVED: %s in %r\n" % (
+                            "SCAN %sARCHIVED: %s in %r\n" % (
+                                "UN" if unarchive else "",
                                 scanid,
-                                self.colname_oldscans,
+                                col_to_scans,
                             )
                         )
                 # remove the scan from the (not archived) scans
                 # collection if there is no more hosts related to this
                 # scan in the hosts collection
-                if self.find_one(self.colname_hosts,
+                if self.find_one(col_from_hosts,
                                  {'scanid': scanid}) is None:
-                    self.db[self.colname_scans].remove(spec_or_id=scanid)
+                    self.db[col_from_scans].remove(spec_or_id=scanid)
                     if config.DEBUG:
                         sys.stderr.write(
                             "SCAN REMOVED: %s in %r" % (
                                 scanid,
-                                self.colname_scans,
+                                col_from_scans,
                             )
                         )
 
@@ -1156,6 +1253,30 @@ have no effect if it is not expected)."""
                 return {'categories': {'$in': cat}}
         return {'categories': cat}
 
+    def searchlabel(self, group=None, label=None, neg=False):
+        """Filters (if `neg` == True, filters out) hosts with
+        `label` in `group`.
+        If `label` is None, filters hosts having a group `group`.
+
+        """
+        if label is None:
+            if group is None:
+                return {'labels.group': {'$exists': not neg}}
+            if type(group) is utils.REGEXP_T:
+                return {'labels.group': {'$not': group} if neg else group}
+            return {'labels.group': {'$ne': group} if neg else group}
+        if neg:
+            return self.flt_or(
+                self.searchlabel(group=group, neg=True),
+                {'labels': {'$elemMatch': {
+                    'group': group,
+                    'tags': ({'$not': label}
+                             if type(label) is utils.REGEXP_T
+                             else {'$ne': label})
+                }}},
+            )
+        return {'labels': {'$elemMatch': {'group': group, 'tags': label}}}
+
     @staticmethod
     def searchcountry(country, neg=False):
         """Filters (if `neg` == True, filters out) one particular
@@ -1232,7 +1353,7 @@ have no effect if it is not expected)."""
 
         """
         if port == "host":
-            return {'ports.port': {'$ne': "host"} if neg else "host"}
+            return {'ports.port': {"$gte": 0} if neg else -1}
         if state == "open":
             return {"openports.%s.ports" % protocol:
                     {'$ne': port} if neg else port}
@@ -1294,7 +1415,7 @@ have no effect if it is not expected)."""
     @staticmethod
     def searchcountopenports(minn=None, maxn=None, neg=False):
         "Filters records with open port number between minn and maxn"
-        assert(minn is not None or maxn is not None)
+        assert minn is not None or maxn is not None
         flt = []
         if minn == maxn:
             return {'openports.count': {'$ne': minn} if neg else minn}
@@ -1693,7 +1814,7 @@ have no effect if it is not expected)."""
         """
         This method makes use of the aggregation framework to produce
         top values for a given field or pseudo-field. Pseudo-fields are:
-          - category / asnum / country
+          - category / label / asnum / country
           - port
           - port:open / :closed / :filtered / :<servicename>
           - portlist:open / :closed / :filtered
@@ -1721,6 +1842,38 @@ have no effect if it is not expected)."""
         # pseudo-fields
         if field == "category":
             field = "categories"
+        elif field == "label" or field.startswith("label:"):
+            subfield = field[6:]
+            field = "labels.tags"
+            group, tag = ((None, None)
+                          if not subfield else
+                          map(utils.str2regexp, subfield.split(':', 1))
+                          if ':' in subfield else
+                          (utils.str2regexp(subfield), None))
+            flt = self.flt_and(flt, self.searchlabel(group=group, label=tag))
+            specialproj = {"_id": 0, "labels.group": 1, "labels.tags": 1}
+            # We need a second filter for hosts containing both label
+            # we want to match and label we don't want to match (the
+            # first filter, `flt`, is needed for performance while the
+            # second, added in `specialflt`, is needed for
+            # correctness).
+            if group is not None:
+                flt2 = {"labels.group": group}
+                if tag is not None:
+                    flt2["labels.tags"] = tag
+                specialflt.append({"$match": flt2})
+            # This projection needs to happen after the $unwind and
+            # after the second filter
+            specialflt.append({"$project": {
+                "_id": 0,
+                "labels.tags": {"$concat": [
+                    "$labels.group",
+                    "###",
+                    "$labels.tags",
+                ]}
+            }})
+            outputproc = lambda x: {'count': x['count'],
+                                    '_id': x['_id'].split('###', 1)}
         elif field == "country":
             flt = self.flt_and(flt, {"infos.country_code": {"$exists": True}})
             field = "infos.country_code"
@@ -1744,7 +1897,7 @@ have no effect if it is not expected)."""
                            ]}}
             field = "city"
             outputproc = lambda x: {'count': x['count'],
-                                    '_id': x['_id'].split('###')}
+                                    '_id': x['_id'].split('###', 1)}
         elif field == "asnum":
             flt = self.flt_and(flt, {"infos.as_num": {"$exists": True}})
             field = "infos.as_num"
@@ -2153,6 +2306,86 @@ have no effect if it is not expected)."""
             return (outputproc(res) for res in cursor)
         return cursor
 
+    def diff_categories(self, category1, category2, flt=None,
+                        archive=False, include_both_open=True):
+        """`category1` and `category2` can be categories (provided as
+        str or unicode objects) or labels (provided as dicts with two
+        keys, "group" and "tags", or as a two-element tuple, (group,
+        tags)). They *must* be of the same type: both categories or
+        both labels.
+
+        Returns a generator of tuples:
+        ({'addr': address, 'proto': protocol, 'port': port}, value)
+
+        Where `address` is an integer (use `utils.int2ip` to get the
+        corresponding string), and value is:
+
+          - -1  if the port is open in category1 and not in category2,
+
+          -  0  if the port is open in both category1 and category2,
+
+          -  1  if the port is open in category2 and not in category1.
+
+        This can be useful to compare open ports from two scan results
+        against the same targets.
+
+        """
+        project = {"_id": 0, "addr": 1, "ports.protocol": 1, "ports.port": 1}
+        if isinstance(category1, basestring):
+            category_filter = self.searchcategory([category1, category2])
+            category_field = "categories"
+            unwind_match = [
+                {"$unwind": "$categories"},
+                {"$match": category_filter},
+            ]
+            project["categories"] = 1
+        else:
+            if isinstance(category1, (tuple, list)):
+                category1 = {"group": category1[0], "tags": category1[1]}
+            if isinstance(category2, (tuple, list)):
+                category2 = {"group": category2[0], "tags": category2[1]}
+            groups = (category1["group"]
+                      if category1["group"] == category2["group"] else
+                      {"$in": [cat["group"] for cat in [category1,
+                                                        category2]]})
+            labels = (category1["tags"]
+                      if category1["tags"] == category2["tags"] else
+                      {"$in": [cat["tags"] for cat in [category1, category2]]})
+            category_filter = self.searchlabel(group=groups, label=labels)
+            category_field = "labels"
+            unwind_match = [
+                {"$unwind": "$labels"},
+                {"$unwind": "$labels.tags"},
+                {"$match": {"labels.group": groups, "labels.tags": labels}},
+            ]
+            project["labels.group"] = 1
+            project["labels.tags"] = 1
+        pipeline = [
+            {"$match": (category_filter if flt is None else
+                        self.flt_and(flt, category_filter))},
+        ]
+        pipeline.extend(unwind_match)
+        pipeline.extend([
+            {"$unwind": "$ports"},
+            {"$match": {"ports.state_state": "open"}},
+            {"$project": project},
+            {"$group": {"_id": {"addr": "$addr", "proto": "$ports.protocol",
+                                "port": "$ports.port"},
+                        "categories": {"$push": "$%s" % category_field}}},
+        ])
+        cursor = self.db[self.colname_oldhosts if archive else
+                         self.colname_hosts].aggregate(pipeline, cursor={})
+        def categories_to_val(categories):
+            states = [category1 in categories, category2 in categories]
+            # assert any(states)
+            return -cmp(*states)
+        cursor = (dict(x['_id'], value=categories_to_val(x['categories']))
+                  for x in cursor)
+        if include_both_open:
+            return cursor
+        else:
+            return (result for result in cursor if result["value"])
+
     def parse_args(self, args, flt=None):
         if flt is None:
             flt = self.flt_empty
@@ -2221,14 +2454,33 @@ have no effect if it is not expected)."""
             flt = self.flt_and(flt, self.searchopenport(neg=True))
         if args.countports:
             minn, maxn = int(args.countports[0]), int(args.countports[1])
-            flt = self.flt_and(flt,self.searchcountopenports(minn=minn, maxn=maxn))
+            flt = self.flt_and(flt,
+                               self.searchcountopenports(minn=minn,
+                                                         maxn=maxn))
         if args.no_countports:
             minn, maxn = int(args.no_countports[0]), int(args.no_countports[1])
-            flt = self.flt_and(flt,self.searchcountopenports(minn=minn, maxn=maxn, neg=True))
+            flt = self.flt_and(flt,
+                               self.searchcountopenports(minn=minn,
+                                                         maxn=maxn,
+                                                         neg=True))
         if args.service is not None:
             flt = self.flt_and(
                 flt,
                 self.searchservicescript(utils.str2regexp(args.service)))
+        if args.label is not None:
+            if ':' in args.label:
+                group, lab = map(utils.str2regexp, args.label.split(':', 1))
+            else:
+                group, lab = utils.str2regexp(args.label), None
+            flt = self.flt_and(flt, self.searchlabel(group=group,
+                                                     label=lab, neg=False))
+        if args.no_label is not None:
+            if ':' in args.no_label:
+                group, lab = map(utils.str2regexp, args.no_label.split(':', 1))
+            else:
+                group, lab = utils.str2regexp(args.no_label), None
+            flt = self.flt_and(flt, self.searchlabel(group=group,
+                                                     label=lab, neg=True))
         if args.script is not None:
             if ':' in args.script:
                 name, output = (utils.str2regexp(string) for
@@ -2614,18 +2866,20 @@ setting values according to the keyword arguments.
         return {field: {'$lt' if neg else '$gte': now - delta}}
 
     def knownip_bycountry(self, code):
-        return self.set_limits(self.find(self.colname_ipdata,
-                                         {'country_code': code}
-                                     )).distinct('addr')
+        return self.set_limits(self.find(
+            self.colname_ipdata,
+            {'country_code': code},
+        )).distinct('addr')
 
     def knownip_byas(self, asnum):
         if type(asnum) is str:
             if asnum.startswith('AS'):
                 asnum = asnum[2:]
             asnum = int(asnum)
-        return self.set_limits(self.find(self.colname_ipdata,
-                                         {'as_num': asnum}
-                                     )).distinct('addr')
+        return self.set_limits(self.find(
+            self.colname_ipdata,
+            {'as_num': asnum}
+        )).distinct('addr')
 
     def set_data(self, addr, force=False):
         """Sets IP information in colname_ipdata."""
@@ -2909,7 +3163,7 @@ class MongoDBAgent(MongoDB, DBAgent):
             ],
             self.colname_masters: [
                 ([('hostname', pymongo.ASCENDING),
-                 ('path', pymongo.ASCENDING)], {}),
+                  ('path', pymongo.ASCENDING)], {}),
             ],
         }
 
@@ -2934,7 +3188,7 @@ class MongoDBAgent(MongoDB, DBAgent):
         return self.db[self.colname_agents].insert(agent)
 
     def get_agent(self, agentid):
-        return self.find(self.colname_agents, {"_id": agentid})
+        return self.find_one(self.colname_agents, {"_id": agentid})
 
     def get_free_agents(self):
         return (x['_id'] for x in
